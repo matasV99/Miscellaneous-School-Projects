@@ -1,0 +1,764 @@
+---
+title: "Project1"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Project 2 
+
+Project2 is really about performing an RNA-seq analysis. You are going to go through all (most) of the steps of an RNA-seq analysis from quality control, differential expression, clustering and annotation. 
+
+#### Gene expression changes during neuronal development. 
+
+Data is taken from:
+*  Multi-scale 3D genome rewiring during mouse neural development
+* https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE96107
+
+In this experiment mESCs (embryonic stem cells) were differentiated in mNPCs (neural progenitor cells) and then into mCNs (cortical neurons) - if you're interested you can have a read of their differentiation protocol. 
+
+The quantifications for experiment are found in the file __GSE96107_gene_quants.tsv__ 
+
+Throughout this project I am going to ask you to do certain parts of an RNA-seq analysis, it is __important__, if you make a plot - its important that you tell me why you made it and what it shows? If you've made a decision about the analysis (i.e. filtering out genes or something) - its important that you describe why you have done this. You should have most of the code (in various pieces / formats from the lectures), but this project will involve you putting it together coherently and showing/writing that you understand whats going on (and that you're not simply copying and pasting).
+
+## Question 1 - input and quality control
+
+Read the in the data using R and make a DESeq object. Perform some basic quality control steps on the data - and comment on all of the plots you make. If you filtered genes out, why did you do this - why did you pick those thresholds?
+
+```{r}
+# filter out genes that are not detectedtably expressed in our system & remove all ribosomal RNA and mitochondrial RNA
+read_counts <- read.table(file = 'GSE96107_gene_quants.tsv', sep = '\t', header = TRUE) #reads already aligned
+ensembl.genes = readRDS("C:/Users/matas/OneDrive/Documents/Yale-NUS/Year 2019 2020/Compbio/Project 2/Mus_musculus_GRCm38_95.rds")
+
+
+read_counts = read_counts[apply(read_counts, 1,function(row) any(row > 0 )),]
+
+
+rrna = names(ensembl.genes[ensembl.genes$gene_biotype%in% c("Mt_rRNA", "rRNA" )])
+total.rrna = colSums(read_counts[ row.names(read_counts)%in% rrna,])
+100 * (total.rrna / colSums(read_counts))
+barplot(100 * (total.rrna / colSums(read_counts)),ylab="%rRNA/mtRNA", las=2, cex.names=0.8)
+
+read_counts = read_counts[!(row.names(read_counts) %in% rrna),]
+```
+
+
+```{r}
+# creating metadata
+
+sampledata = data.frame(name=c(paste("mES", 1:2, sep="_rep"),
+                               paste("mNPC", 1:2, sep="_rep"),
+                               paste("mCN", 1:2, sep="_rep")),
+                        condition=c(rep("mES", 2), rep("mNPC", 2), rep("mCN", 2)),
+                        replicate=c(1:2, 1:2, 1:2),
+                        bam=colnames(read_counts))
+write.table(sampledata, "sampledata.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+experimental.metadata = read.table("C:/Users/matas/OneDrive/Documents/Yale-NUS/Year 2019 2020/Compbio/Project 2/project2metadata.txt", stringsAsFactors=FALSE, sep="\t", header=TRUE)
+
+experimental.metadata$condition = factor(experimental.metadata$condition,
+                             levels=c("mES","mNPC", "mCN"))
+
+colnames(read_counts) = experimental.metadata$name
+```
+
+
+```{r}
+# turn to a DESeq object
+library(DESeq2)
+dds = DESeqDataSetFromMatrix(countData = read_counts, colData = experimental.metadata, design = ~condition) 
+
+dds <- estimateSizeFactors(dds)
+
+dds <- estimateDispersions(dds)
+
+rld <- DESeq2::rlog(dds) #transforms count data to log2 scale in a way which minimzes differences between samples for rows with small counts and normalizes for library size.
+```
+
+```{r}
+# compare replicates
+dds_mES <- counts(dds, normalized=TRUE)[,grepl("mES", colnames(counts(dds, normalized=TRUE)))]
+dds_mNPC <- counts(dds, normalized=TRUE)[,grepl("mNPC", colnames(counts(dds, normalized=TRUE)))]
+dds_mCN <- counts(dds, normalized=TRUE)[,grepl("mCN", colnames(counts(dds, normalized=TRUE)))]
+
+for (i in 1:ncol(dds_mNPC)){
+  for (ii in 1:ncol(dds_mNPC)){
+    M <- log10(dds_mNPC[,i] + dds_mNPC[,ii])/2
+    A <- log2(dds_mNPC[,i]/dds_mNPC[,ii])
+    plot( x = M, y = A, ylab = paste(c(colnames(dds_mNPC)[i], "/", colnames(dds_mNPC)[ii])), xlab = "mean of normalized counts")
+  }
+}
+# reasonable spread
+
+for (i in 1:ncol(dds_mES)){
+  for (ii in 1:ncol(dds_mES)){
+    M <- log10(dds_mES[,i] + dds_mES[,ii])/2
+    A <- log2(dds_mES[,i]/dds_mES[,ii])
+    plot( x = M, y = A, ylab = paste(c(colnames(dds_mES)[i], "/", colnames(dds_mES)[ii])), xlab = "mean of normalized counts")
+  }
+}
+# reasonable spread
+
+for (i in 1:ncol(dds_mCN)){
+  for (ii in 1:ncol(dds_mCN)){
+    M <- log10(dds_mCN[,i] + dds_mCN[,ii])/2
+    A <- log2(dds_mCN[,i]/dds_mCN[,ii])
+    plot( x = M, y = A, ylab = paste(c(colnames(dds_mCN)[i], "/", colnames(dds_mCN)[ii])), xlab = "mean of normalized counts")
+  }
+}
+```
+
+
+```{r}
+# PCA plot
+plotPCA(rld, intgroup = c( "condition"))
+ data = plotPCA(rld, intgroup = c( "condition"), returnData=TRUE)
+```
+
+### Why did you do what you did in the quality control step? 
+
+```{r eval=FALSE}
+
+#The first thing that I did was remove the genes that did not have any reads in any of the conditions. The second thing I did, was to check how many reads mapped to rRNA and mtRNA genes in each sample. I found a lot of them and decided that I have to cut them out as they are not genomic DNA that I am interested in. 
+#Third, I applied estimateSizeFactors function on the Deseq object. This function normalizes for sequencing depth and for library composition which are necessary to be able to make differential expression comparisons between conditions.
+
+
+
+# I also performed MA plots to check whether there are differences in expression between replicates in order to check for systematic errors. The MA plots showed relative similarity as the graphs tend to cluster around 0 on y axis, meaning, that there is not a big variation between replicates.
+
+# Furthermore, a PCA plot was performed to check whether the samples of the same condition contribute to the variability of the dataset equally (which should be expected because they are from the same condition). The PCA plot showed that the mCN samples were more closely alike in terms of contributing to variability than mNPC and mES. Overall, it can be fully claimed that the PCA plots confirms that the conditions are labeled appropriately.
+
+```
+
+## Question 2 - Differential expression
+
+Perform a differential expression analysis, asking whether the expression of a gene significantly changes its expression across conditions and between pairs of conditions. How many genes are differentially expressed? 
+
+```{r}
+# Differentially expressed genes accross conditions
+library(DESeq2)
+
+dds <- DESeq(dds)
+dds = nbinomLRT(dds, full = ~ 1 + condition, reduced = ~ 1)
+res <- results(dds)
+sum(res$padj < 0.05, na.rm = TRUE) #12339
+```
+
+
+```{r}
+# Differentially expressed genes between pairs of conditions
+mES_vs_mNPC = results(dds, contrast=c("condition", "mES", "mNPC"), independentFiltering = TRUE, alpha=0.1, test="Wald")
+mNPC_vs_mCN = results(dds, contrast=c("condition", "mNPC", "mCN"), independentFiltering = TRUE, alpha=0.1, test="Wald")
+mES_vs_mCN = results(dds, contrast=c("condition", "mES", "mCN"), independentFiltering = TRUE, alpha=0.1, test="Wald")
+
+sum(mES_vs_mNPC$padj < 0.05, na.rm = TRUE) # 7104
+sum(mNPC_vs_mCN$padj < 0.05, na.rm = TRUE) # 6731
+sum(mES_vs_mCN$padj < 0.05, na.rm = TRUE) # 12018
+
+hist(mES_vs_mNPC$pvalue, xlab="pvalue", main="mT vs mN")
+filter = apply(counts(dds, normalized=TRUE), 1, function(x){ mean(x) >= 10 })
+dds = dds[filter, ]
+
+dds = DESeqDataSetFromMatrix(countData = read_counts, colData = experimental.metadata, design = ~condition) 
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+dds <- DESeq(dds)
+dds = nbinomLRT(dds, full = ~ 1 + condition, reduced = ~ 1)
+results.lrt <- results(dds)
+
+
+
+```
+
+For the pairwise comparisons - make an MA-plot or volcano plot to visualise whats going on.
+```{r}
+# volcano plots
+library(scales)
+# mES_vs_mNPC 
+plot(mES_vs_mNPC$log2FoldChange,
+      -log10(mES_vs_mNPC$padj), pch=19, ylim=c(0,15), col = alpha("grey", 0.1), xlim=c(-10, 10), main = "mES_vs_mNPC")
+# mNPC_vs_mCN 
+plot(mNPC_vs_mCN$log2FoldChange,
+      -log10(mNPC_vs_mCN$padj), pch=19, ylim=c(0,15), col = alpha("grey", 0.1), xlim=c(-10, 10), main = "mNPC_vs_mCN " )
+# mES_vs_mCN
+plot(mES_vs_mCN$log2FoldChange,
+      -log10(mES_vs_mCN$padj), pch=19, ylim=c(0,15), col = alpha("grey", 0.1), xlim=c(-10, 10), main = "mES_vs_mCN")
+
+```
+
+Again, why have you made the choices you have made and what do the plots show?
+```{r, eval=FALSE}
+# A false discovery rate of 0.1 is chosen as that is the convention during the WALD test. To calculate the number of differentially expressed genes we found 7104 genes for embryonic stem cells versus neural progenitor cells, 6731 genes for neural progenitor cells versus cortical cells and 12018 for embryonic stem cells versus cortical neurons.
+
+# I filtered out genes with small counts as  when the p-value distribution of differential expression between conditions showed a lot of them close to 1.
+
+
+# I chose to use an Volcano plot to evalute the gene expression between samples. Volcano plots are useful because they  visually point to the fold change in gene expression of a gene (x-axis) and to how significant it is(y-axis). Most significant genes should be in the top and right corners of the plot. Upregulated genes are in the right corner, while downregulated genes are in the left corner. Volcano plots are more useful for comparing accross conditions while MA plots are more useful for comparing inside a condition between replicates.
+
+# The volcano plot analysis shows couple of things. Firstly, mEs vs mCN shows more spread than either mES vs mNPC or mNPC vs mCN. This makes sense because there is probably a greater difference in expression profiles between completely undifferentiated cell lines (embryonic cell) and completely differentiated cells (cortical neurons). This observation is also consisten with the PCA plot which showed that genes from mCN condition contributed most to variation in the sample. Secondly, I would say that when comparing a volcano plot of mES vs mNPC and mNPC vs mCN one sees greater number of upregulated genes in embryonic cells becoming neural progenitor cells while in the transition from neural progenitor cells to cortical neurons one sees slightly more downregulation.
+```
+
+
+## Question 3 - Clustering
+
+Wow - thats a lot of stuff that changes during neuronal differentiation ..... perhaps it would be useful to cluster the data somehow and look for patterns.  
+
+```{r}
+# converting to z-scores + creating graph details
+library(pheatmap)
+library("grid")
+library("gridExtra")
+library(DESeq2)
+library(biomaRt)
+library("GenomicFeatures")
+
+significant_results = results.lrt[!is.na(results.lrt$padj) & results.lrt$padj<0.01, ] # filter out nonsignificant stuff
+significant_results
+rld_signif = assay(rld)[rownames(significant_results),] #got the log2 count data of significant results
+rld_z = t(apply(rld_signif, 1, function(x){ (x - mean(x)) / sd(x)})) #find z score of the count data
+
+thr = 4 # -+4 sd very big outliers - want to ignore them
+rld_z[rld_z > thr] = thr
+rld_z[rld_z < -thr] = -thr
+
+paletteLength = 20 
+breaksList <- c(seq(-thr, 0, length.out=ceiling(paletteLength/2) + 1),  #breaks
+              seq(thr/paletteLength, thr, length.out=floor(paletteLength/2)))
+
+color = c(colorRampPalette(c("mediumblue", "white"))(14), colorRampPalette(c("white", "firebrick2"))(14)) # different colours
+
+breaksList = seq(-3, 3, length.out = 29)
+```
+
+
+```{r}
+# k-means clustering
+
+nclust = 3
+results.coef.kmeans = kmeans(rld_z,nclust,iter.max=50)
+
+results.coef = rld_z[order(results.coef.kmeans$cluster),] #order the rld_z based on the k-means clustering
+
+table(results.coef.kmeans$cluster)
+
+heat.map_kmeans <- pheatmap(results.coef, cluster_col=FALSE,breaks=breaksList, cluster_rows=FALSE,show_rownames=FALSE,color = color,fontsize_row = 3, legend=TRUE,border_color = NA)
+
+results.coef.kmeans$size 
+
+saveRDS(file = "results.coef.kmeans", object = results.coef.kmeans)
+```
+
+```{r}
+# selecting k value c) elbow criterion graph - select the bigger K value that does not differentiate in WSSS significantly than greater K values
+set.seed(123)
+k.max <- 10
+wss <- sapply(1:k.max, 
+              function(k){kmeans(rld_z, k, nstart=10,iter.max = 15 )$tot.withinss})
+wss
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+```
+
+Again, why did you choose to cluster the data like this? What technique did you choose and why? How many clusters?
+
+```{r eval=FALSE}
+# I choose k-means clustering to cluster my data as I thought that my analysis would be more objective. In hierarchical analysis I would look at the cladogram and choose the amount of clusters that I think captures the variability in data. In k-means clustering, I can do the elbow criteria graph which tells me how the differences within clusters vary with the number of clusters.
+
+# Obviously, some subjective still I remains. A cluster number of 3 was chosen as the relative increase in total differences within clusters do not increase as much with an increase in k value. The cluster numbmer could have also been 2,3 or 4. Another reason for the 3 clusters is that I have 3 conditions and presumed that the algorythm will group my data into 3 clusters.
+
+# I also chose k-means clustering over hierarchical clustering as I am not looking for any hierarchical relationships between conditions.
+```
+
+## Question 4 - Annotation
+
+### Question 4a
+Ok, so lets annotate the clusters with the terms/processes/pathways that they are enriched with. Do these annotations make sense given the patterns in the clusters. Remember that clustering ordering changes between runs so you may have to saveRDS and readRDS. 
+
+Its easy to do look for GO enrichments - can you look for enrichments of any other ontologies?
+
+```{r}
+library(org.Mm.eg.db)
+library(clusterProfiler)
+
+c1 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==1]) 
+c2 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==2]) 
+c3 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==3]) 
+
+ego1 <- enrichGO(gene          = c1,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE) #gene - vector, orgDb - server?, universe - background genes
+
+ego2 <- enrichGO(gene          = c2,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE)
+ego3 <- enrichGO(gene          = c3,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE)
+
+dotplot(ego1)
+dotplot(ego2)
+dotplot(ego3)
+```
+
+
+```{r}
+# KEGG ontology
+ekg1 <- enrichKEGG(gene  = as.character(ensembl.genes[c1,]$entrezgene),
+                   universe = as.character(ensembl.genes[rownames(dds),]$entrezgene),
+                organism = "mmu",
+                qvalueCutoff = 0.1
+                )
+ekg2 <- enrichKEGG(gene  = as.character(ensembl.genes[c2,]$entrezgene),
+                   universe = as.character(ensembl.genes[rownames(dds),]$entrezgene),
+                organism = "mmu",
+                qvalueCutoff = 0.1
+                )
+ekg3 <- enrichKEGG(gene  = as.character(ensembl.genes[c3,]$entrezgene),
+                   universe = as.character(ensembl.genes[rownames(dds),]$entrezgene),
+                organism = "mmu",
+                qvalueCutoff = 0.1
+                )
+dotplot(ekg1)
+dotplot(ekg2)
+dotplot(ekg3)
+
+```
+
+```{r,eval= FALSE}
+dotplot(ego1)
+dotplot(ekg1)
+# In cluster 1, high expression in mCN condition, mid expression in mNPC, and low expression in mES condition. GO:BP enrichment analysis shows genes enriched in - axon development, axonogenesis, synapse organization, positive regulation of neuron differentiation, regulation of cell morphogenesis involved in differentiation, neuron projection guidance, regulation of synapse structure or activity. This of course makes sense because the cells in cortical neurons should be most differentiated and axonogenesis, and synapse organization should also be enriched. The KEGG enrichment analysis is also consisten with the heatmap as it shows cortical neurons as having genes enriched in axon guidance, glutamatergic synapse and dopaminergic synapse.
+
+dotplot(ego2)
+dotplot(ekg2)
+# In cluster 2, low expression in mCN condition, low expression in mNPC, and high expression in mES condition. GO:BP enrichment analysis shows genes enriched in - cellular process involved in reproduction in multicellular organism, meiotic cell cycle, response to leukemia inhibitory factor, cellular response to leukemia inhibitory factor, DNA methylation or demethylation and others.The results make sense in relation to the expression heatmap as high expression patterns in embryonic cells are explained by the genes involved in response to leukemia inhibitory factor which is an important transcription factor that regulates stem cell self-renewal. DNA methylation or demethylation enrichment category also makes sense as embryonic cells are methylated so that they do not differentiated into another type of cell. KEGG enrichment analysis did not find annotations for the genes in this cluster.
+
+
+
+dotplot(ego3)
+dotplot(ekg3)
+# In cluster 3, low expression in mCN condition, mid expression in mNPC, and high expression in mES condition. The GO:BP enrichment analysis shows that genes are enriched in ribonucleorpotein complex biogenesis, ncRNA metabolic process, DNA repair, ribosome biogenesis, ncRNA processing and others. The results are consisten with the heatmap showing that higher expression occurs in embroynic cells in this cluster. Enrichment in ribonucleoprotein complex biogenesis can be explained by the need to be able to produce proteins for the differentiation process. Non-coding RNAs have also been shown to be controlling embryogenesis so enrichment in their metabolism makes sense. KEGG enrichment analysis shows genes enriched in Ribosomes, RNA transport and cell cycle - all of which are consisten with the enterpretation that greater protein turnover is needed for potential differentiation to other types of cells from embryonic cells.
+
+```
+
+### Question 4b
+
+Ok, so lets annotate the genes that are differentially expressed from the pairwise comparisons. Why have you made the decisions you have made? Interpret the plots.
+
+converting mES vs mCN to z scores
+
+```{r}
+# converting mES vs mCN to z scores
+significant_results = mES_vs_mCN[!is.na(mES_vs_mCN$padj) & mES_vs_mCN$padj<0.01, ] # filter out nonsignificant stuff
+
+rld_signif = assay(rld[,c("mCN_rep1", "mCN_rep2", "mES_rep1", "mES_rep2")])[rownames(significant_results),] #got the log2 count data of significant results
+rld_z= t(apply(rld_signif, 1, function(x){ (x - mean(x)) / sd(x)})) #find z score of the count data
+
+thr = 4 # -+4 sd very big outliers - want to ignore them
+rld_z[rld_z > thr] = thr
+rld_z[rld_z < -thr] = -thr
+rld_z
+
+paletteLength = 20 
+breaksList <- c(seq(-thr, 0, length.out=ceiling(paletteLength/2) + 1),  #breaks
+              seq(thr/paletteLength, thr, length.out=floor(paletteLength/2)))
+
+color = c(colorRampPalette(c("mediumblue", "white"))(14), colorRampPalette(c("white", "firebrick2"))(14)) # different colours
+
+breaksList = seq(-3, 3, length.out = 29)
+```
+
+```{r}
+# wss for mES vs mCN
+# selecting k value c) elbow criterion graph - select the bigger K value that does not differentiate in WSSS significantly than greater K values
+set.seed(123)
+k.max <- 10
+wss <- sapply(1:k.max, 
+              function(k){kmeans(rld_z, k, nstart=10,iter.max = 15 )$tot.withinss})
+wss
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+
+# 2 clusters is chosen
+```
+
+
+```{r}
+# k-means clustering for mES vs mCN
+nclust = 2
+results.coef.kmeans = kmeans(rld_z,nclust,iter.max=50)
+
+results.coef = rld_z[order(results.coef.kmeans$cluster),] #order the rld_z based on the k-means clustering
+
+table(results.coef.kmeans$cluster)
+
+mES_vs_mCN_heat.map_kmeans <- pheatmap(results.coef, cluster_col=FALSE,breaks=breaksList, cluster_rows=FALSE,show_rownames=FALSE,color = color,fontsize_row = 3, legend=TRUE,border_color = NA)
+
+results.coef.kmeans$size 
+
+saveRDS(file = "mESC_vs_MCN_results.coef.kmeans", object = results.coef.kmeans)
+
+```
+
+```{r}
+# enrichment analysis of pairwise comparisons
+
+mES_mCN_c1 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==1]) 
+mES_mCN_c2 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==2]) 
+
+
+ego_mES_mCN_c1 <- enrichGO(gene          = mES_mCN_c1,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE) #gene - vector, orgDb - server?, universe - background genes
+
+ego_mES_mCN_c2 <- enrichGO(gene          = mES_mCN_c2,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE)
+
+dotplot(ego_mES_mCN_c1)
+dotplot(ego_mES_mCN_c2)
+```
+
+```{r eval=FALSE}   
+
+# significant results from the results of a WALD test of 0.1 for adjusted p-value was selected. NA values were also ignored. Then I chose to use k-means clustering because of the reasons outlined in question 3. A cluster number of 2 was chosen from the "elbow criteria". This especially makes sense because I want to differentiate between the two conditions. A false discovery rate of 0.1 is chosen for the GO enrichment part.
+
+# results for mES vs mCN
+
+mES_vs_mCN_heat.map_kmeans
+dotplot(ego_mES_mCN_c1)
+dotplot(ego_mES_mCN_c2)
+
+# In cluster 1, mCN show low expression, while mESC show high expression patterns. GO:BP enrichment analysis shows that ncRNA metabolic process, ribonucleoprotein complex biogenesis and DNA repair are enriched for. From the heatmap one can infer that these are enriched in embryonic stem cells. These same pathways are enriched for in the cluster 3 of the whole read_counts data. Essentially, ribonucleoprotein complex biogenesis is needed for the production of proteins for the differentiation processes, while ncRNA controls embryogenesis. 
+
+# In cluster 2, mCN show high expression, while mESC show low expression. GO:BP enrichment analysis shows gene enriched for axon development axonogenesis and synapse organization. This is consisten with the heatmap as these genes would be enriched in cortical neurons. The development of nervous structures like axons and organization of synapses is necessary for cortical neuron function of neural propogation. 
+```
+
+
+
+converting mNPC vs mCN to z scores
+
+
+
+```{r}
+# converting mNPC vs mCN to z scores
+significant_results = mNPC_vs_mCN[!is.na(mNPC_vs_mCN$padj) & mNPC_vs_mCN$padj<0.01, ] # filter out nonsignificant stuff
+
+rld_signif = assay(rld[,c("mNPC_rep1", "mNPC_rep2", "mCN_rep1", "mCN_rep2")])[rownames(significant_results),] #got the log2 count data of significant results
+rld_z = t(apply(rld_signif, 1, function(x){ (x - mean(x)) / sd(x)})) #find z score of the count data
+
+thr = 4 # -+4 sd very big outliers - want to ignore them
+rld_z[rld_z > thr] = thr
+rld_z[rld_z < -thr] = -thr
+rld_z
+
+paletteLength = 20 
+breaksList <- c(seq(-thr, 0, length.out=ceiling(paletteLength/2) + 1),  #breaks
+              seq(thr/paletteLength, thr, length.out=floor(paletteLength/2)))
+
+color = c(colorRampPalette(c("mediumblue", "white"))(14), colorRampPalette(c("white", "firebrick2"))(14)) # different colours
+
+breaksList = seq(-3, 3, length.out = 29)
+```
+
+```{r}
+# wss for mNPC vs mCN
+# selecting k value c) elbow criterion graph - select the bigger K value that does not differentiate in WSSS significantly than greater K values
+set.seed(123)
+k.max <- 10
+wss <- sapply(1:k.max, 
+              function(k){kmeans(rld_z, k, nstart=10,iter.max = 15 )$tot.withinss})
+wss
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+
+# 2 clusters is chosen
+```
+
+
+```{r}
+# k-means clustering for mNPC vs mCN
+nclust = 2
+results.coef.kmeans = kmeans(rld_z,nclust,iter.max=50)
+
+results.coef = rld_z[order(results.coef.kmeans$cluster),] #order the rld_z based on the k-means clustering
+
+table(results.coef.kmeans$cluster)
+
+results.coef.kmeans
+
+mNPC_mCN_heat.map_kmeans <- pheatmap(results.coef, cluster_col=FALSE,breaks=breaksList, cluster_rows=FALSE,show_rownames=FALSE,color = color,fontsize_row = 3, legend=TRUE,border_color = NA)
+
+results.coef.kmeans$size 
+
+saveRDS(file = "mNPC_vs_mCN_results.coef.kmeans", object = results.coef.kmeans)
+
+```
+
+```{r}
+# enrichment analysis of mNPC vs mCN
+
+mNPC_mCN_c1 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==1]) 
+mNPC_mCN_c2 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==2]) 
+
+
+ego_mNPC_mCN_c1 <- enrichGO(gene          = mNPC_mCN_c1,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE) #gene - vector, orgDb - server?, universe - background genes
+
+ego_mNPC_mCN_c2 <- enrichGO(gene          = mNPC_mCN_c2,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE)
+
+dotplot(ego_mNPC_mCN_c1)
+dotplot(ego_mNPC_mCN_c2)
+```
+
+```{r=FALSE}
+
+# The significance levels and false discovery rate were the same as in mES vs mCN. 2 clusters were chosen for k-means clustering.
+heat.map_kmeans
+dotplot(ego_mES_mNPC_c1)
+dotplot(ego_mES_mNPC_c2)
+
+# In cluster 1, the heatmap shows high expression in NPC cell lines, and low expression in ESC cell lines. GO:BP enrichment analysis shows genes enriched for axon development, axonogenesis and synapse organization. This are consistent with the heatmap as it means that NPC cell lines have the latter enrichments.
+# In cluster 2, the heatmap shows low gene expression in NPC cell lines, and low expression in ESC cell lines. GO:BP enrichment analysis shows ncRNA metabolic process, ribonucleoprotein complex biogenesis, and cellular processes involved in reproduction in multicellular organisms enriched. This is consisten with the heatmap as it these enrichments are common for embryonic stem cells. (also observed in the comparison mESC vs mCN)
+```
+
+
+
+converting mES vs mNPC to z scores
+
+
+
+```{r}
+# converting mES vs mNPC to z scores
+significant_results = mES_vs_mNPC[!is.na(mES_vs_mNPC$padj) & mES_vs_mNPC$padj<0.01, ] # filter out nonsignificant stuff
+
+rld_signif = assay(rld[,c("mNPC_rep1", "mNPC_rep2", "mES_rep1", "mES_rep2")])[rownames(significant_results),] #got the log2 count data of significant results
+rld_z = t(apply(rld_signif, 1, function(x){ (x - mean(x)) / sd(x)})) #find z score of the count data
+
+thr = 4 # -+4 sd very big outliers - want to ignore them
+rld_z[rld_z > thr] = thr
+rld_z[rld_z < -thr] = -thr
+rld_z
+
+paletteLength = 20 
+breaksList <- c(seq(-thr, 0, length.out=ceiling(paletteLength/2) + 1),  #breaks
+              seq(thr/paletteLength, thr, length.out=floor(paletteLength/2)))
+
+color = c(colorRampPalette(c("mediumblue", "white"))(14), colorRampPalette(c("white", "firebrick2"))(14)) # different colours
+
+breaksList = seq(-3, 3, length.out = 29)
+```
+
+```{r}
+# wss for mES vs NPC
+# selecting k value c) elbow criterion graph - select the bigger K value that does not differentiate in WSSS significantly than greater K values
+set.seed(123)
+k.max <- 10
+wss <- sapply(1:k.max, 
+              function(k){kmeans(rld_z, k, nstart=10,iter.max = 15 )$tot.withinss})
+wss
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+
+# 2 clusters is chosen
+```
+
+
+```{r}
+# k-means clustering for mES vs mNPC
+nclust = 2
+results.coef.kmeans = kmeans(rld_z,nclust,iter.max=50)
+
+results.coef = rld_z[order(results.coef.kmeans$cluster),] #order the rld_z based on the k-means clustering
+
+table(results.coef.kmeans$cluster)
+
+mESC_vs_mNPC_heat.map_kmeans <- pheatmap(results.coef, cluster_col=FALSE,breaks=breaksList, cluster_rows=FALSE,show_rownames=FALSE,color = color,fontsize_row = 3, legend=TRUE,border_color = NA)
+
+results.coef.kmeans$size 
+
+saveRDS(file = "mESC_vs_mNPC_results.coef.kmeans", object = results.coef.kmeans)
+
+```
+
+```{r}
+# enrichment analysis of mES vs mNPC comparisons
+
+mES_mNPC_c1 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==1]) 
+mES_mNPC_c2 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==2]) 
+
+
+ego_mES_mNPC_c1 <- enrichGO(gene          = mES_mNPC_c1,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE) #gene - vector, orgDb - server?, universe - background genes
+
+ego_mES_mNPC_c2 <- enrichGO(gene          = mES_mNPC_c2,
+                universe      = rownames(dds),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "BP",
+                pAdjustMethod = "BH", #adjust for multiple testing
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 0.1,
+        readable      = TRUE)
+
+dotplot(ego_mES_mNPC_c1)
+dotplot(ego_mES_mNPC_c2)
+```
+
+```{r=FALSE}
+
+# The significance levels and false discovery rate were the same as in mES vs mCN. 2 clusters were chosen for k-means clustering.
+
+mESC_vs_mNPC_heat.map_kmeans
+dotplot(ego_mES_mNPC_c1)
+dotplot(ego_mES_mNPC_c2)
+
+# In cluster 1, there is low expression in NPC cell lines, and high expression in CN cell lines. GO:BP enrichment analysis says that genes in exon development, axonogenesis, synapse organization are overrepresented. This makes sense in relation to the heatmap as cortical neuron cell lines should have more neuron formation related genes than NPC cell line.
+# In cluster 2, there is high expression in NPC cell lines, and low expression in CN cell lines. GO:BP enrichment analysis shows ncRNA metabolic process, ribonucleoprotein complex biogenesis, and others to be overrepresented in this cluster. This makes sense in relation to the heatmap as neural progenitor cells would have genes that are needed for differentiation to cortical neurons to be enriched. (like the ability to create lots of protein for the process of differentiation) 
+```
+
+## Question 5
+
+It would be great if we could figure out some marker genes from our data for mESC, mNPC and mCN ... pick 3 genes that would make good marker genes for eahc of the cell lines? ANd plot them in a heatmap
+
+finding biomarker gene for mESC cells
+```{r}
+# rerun the heatmap for DE across all conditions with 3 clusters
+
+results.coef.kmeans <- readRDS(file = "results.coef.kmeans")
+results.coef = rld_z[order(results.coef.kmeans$cluster),]
+heat.map_kmeans <- pheatmap(results.coef, cluster_col=FALSE,breaks=breaksList, cluster_rows=FALSE,show_rownames=FALSE,color = color,fontsize_row = 3, legend=TRUE,border_color = NA)
+
+c1 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==1]) 
+c2 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==2]) 
+c3 = names(results.coef.kmeans$cluster[results.coef.kmeans$cluster==3]) 
+
+
+# re-run to get rld_z
+significant_results = results.lrt[!is.na(results.lrt$padj) & results.lrt$padj<0.01, ] # filter out nonsignificant stuff
+significant_results
+rld_signif = assay(rld)[rownames(significant_results),] #got the log2 count data of significant results
+rld_z = t(apply(rld_signif, 1, function(x){ (x - mean(x)) / sd(x)})) #find z score of the count data
+
+thr = 4 # -+4 sd very big outliers - want to ignore them
+rld_z[rld_z > thr] = thr
+rld_z[rld_z < -thr] = -thr
+
+# select the cluster 1 for NPC
+a <- rld_z[c1, 3:4]
+
+# find maximum mean z score in the condition
+which((a[,2] + a[,1] /2) == max(a[,2] + a[,1] /2)) # ENSMUSG00000039231 biomarker gene for NPC
+
+
+# select cluster 2 for CN
+b <- rld_z[c2, 5:6]
+# find maximum mean z score in the condition
+which((b[,2] + b[,1] /2) == max(b[,2] + b[,1] /2)) # ENSMUSG00000032243 biomarker gene for CN
+
+# select cluster 3 for ESC
+c <- rld_z[c3, 1:2]
+# find maximum mean z score in the condition
+which((c[,2] + c[,1] /2) == max(c[,2] + c[,1] /2)) # ENSMUSG00000002603  biomarker gene for ESC
+
+
+
+
+pheatmap(rld_z[c("ENSMUSG00000039231", "ENSMUSG00000032243","ENSMUSG00000002603"),], cluster_col=FALSE,breaks=breaksList, cluster_rows=FALSE,show_rownames=FALSE,color = color,fontsize_row = 3, legend=TRUE,border_color = NA)
+
+```
+
+Why have you picked these? What criteria have you used? 
+
+```{r eval=FALSE}
+# I was looking that my biomarkers would be a) specific to my condition b) statistically significant change was observed c) consistent for both replicates d) Made sense in the literature
+
+# a) Specificity was ensured by looking at the heatmap of clusters of z scores of read counts accross all conditions. I identified in which clusters genes are upregulated for which condition. I then selected those z-scores. 
+
+# b) c) I looked for statistically significant change from the mean of the data thats consistent in replicates. I found the maximum mean z-score between two replicates of a condition. This ensured that the biomarker would be significantly upregulated in both replicates and the maximum was z-score was chosen so that the signal would be significant. 
+
+rld_z["ENSMUSG00000039231", 3:4] # Neural Progenitor Cell z-scores
+rld_z["ENSMUSG00000032243",5:6] # Cortical Neuron cell z-scores
+rld_z["ENSMUSG00000002603", 1:2] # Embryonic Stem cell z-scores
+
+# d) I confirmed that tgfb1 can be used as a biomarker for cortical neurons as I found that it is associated with Dopamine and GABAergic neurons. Luo, Sarah X et al. “TGF-β Signaling in Dopaminergic Neurons Regulates Dendritic Growth, Excitatory-Inhibitory Synaptic Balance, and Reversal Learning.” Cell reports vol. 17,12 (2016): 3233-3245. doi:10.1016/j.celrep.2016.11.068
+
+# I confirmed that Suv39h1 can be used as a biomarker for neural progenitor cells because it is a methyltransferase that regulates chromatin state in early mouse development. 
+#Ring1B and Suv39h1 delineate distinct chromatin states at bivalent genes during early mouse lineage commitment
+#Olivia Alder, Fabrice Lavial, Anne Helness, Emily Brookes, Sandra Pinho, Anil Chandrashekran, Philippe Arnaud, Ana Pombo, Laura O'Neill, Véronique Azuara Development 2010 137: 2483-2492; doi: 10.1242/dev.048363
+
+# I confirmed that Tgfb1 can be used as a biomarker for embryonic stem cells as it is a cytokine protein that control cell cycles and cell proliferation. https://en.wikipedia.org/wiki/TGF_beta_1
+
+ensembl.genes$mgi_symbol[ensembl.genes$gene_id=="ENSMUSG00000039231"] #Suv39h1
+ensembl.genes$mgi_symbol[ensembl.genes$gene_id=="ENSMUSG00000032243"] #Itga11
+ensembl.genes$mgi_symbol[ensembl.genes$gene_id=="ENSMUSG00000002603"] #Tgfb1
+
+```
+
+
+
+```{r}
+sessionInfo()
+```
