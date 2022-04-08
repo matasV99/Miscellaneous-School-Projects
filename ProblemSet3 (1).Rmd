@@ -1,0 +1,264 @@
+---
+title: "ProblemSet_ML"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Supervised learning
+
+So the task is to build three classifiers to discriminate between CIMP and non-CIMP data (as described in class). 
+
+You need to train your models (see caret pacakge) on the data, and calculate their performance (obviously using some form of cross-validation). There are lots of different metrics for calculating performance - PPV/Precision, TPR/Recall/Sensitivity and FPR/Fall-out are useful metrics to look at. 
+
+Remember that you already have 2 partially working classifiers (Bayesian GLM and Random Forest) from the code we have gone through in class. 
+
+And the subsequently compare and contrast the results from the three classifiers and make a decision as to what is the best method for this task. 
+
+#### Useful documentation
+The Computational Genomics in R Book: https://compgenomr.github.io/book/
+The documentation for caret: `https://topepo.github.io/caret/available-models.html
+
+
+```{r, eval=FALSE}
+library(devtools)
+
+devtools::install_github("compgenomr/compGenomRData")
+```
+
+```{r}
+library(caret)
+library(e1071)
+```
+
+```{r}
+fileLGGexp=system.file("extdata","LGGrnaseq.rds", package="compGenomRData")
+fileLGGann=system.file("extdata", "patient2LGGsubtypes.rds",  package="compGenomRData")
+
+gexp=readRDS(fileLGGexp)
+gexp[1:10,1:5]
+dim(gexp) #20501 genes, 184 patients
+```
+
+
+```{r}
+patient=readRDS(fileLGGann)
+head(patient)
+dim(patient) #184 patients, 1 subtype
+```
+
+
+```{r}
+# preliminary plotting
+boxplot(gexp[,1:50],outline=FALSE,col="cornflowerblue") # log transformation needed because long-tailed distributions
+
+par(mfrow=c(1,2))
+hist(gexp[,5],xlab="gene expression",main="",border="blue4",
+     col="cornflowerblue") # distribution very scewed, so, log transformation is needed
+hist(log10(gexp+1)[,5], xlab="gene expression log scale",main="",
+     border="blue4",col="cornflowerblue")
+```
+
+
+```{r} 
+# transform to log and transpose so that predictors are columns (ML algorithms require this)
+gexp=log10(gexp+1) # +1 is added to avoid log0 being undefined
+
+tgexp <- t(gexp)
+head(tgexp[,1:5]) #patients - rows, genes (predictors) - columns
+```
+
+```{r}
+# excludes numeric predictors if variance is 0 (slow down algorithm, not much predictive capacity either way...)
+nzv=preProcess(tgexp,method="nzv",uniqueCut = 15) # If at least 85% of variables are the same
+nzv_tgexp=predict(nzv,tgexp)
+dim(nzv_tgexp) #181, 18881
+
+
+SDs=apply(tgexp,2,sd ) # calculate SD for each gene
+topPreds=order(SDs,decreasing = TRUE)[1:1000] # top1000 most variable (highest SDs) genes
+tgexp=tgexp[,topPreds] # select those top predicting genes
+
+
+
+processCenter=preProcess(tgexp, method = c("center"))
+tgexp=predict(processCenter,tgexp)
+
+
+corrFilt=preProcess(tgexp, method = "corr",cutoff = 0.9) #get rid of correlated predictor variables
+tgexp=predict(corrFilt,tgexp)
+```
+
+
+```{r}
+# # Imputing Median value for Na values
+anyNA(tgexp)
+# missing_tgexp=tgexp
+# 
+# mImpute=preProcess(missing_tgexp,method="medianImpute")
+# imputedGexp=predict(mImpute,missing_tgexp)
+```
+
+```{r preprocessing}
+#Merging data
+tgexp=merge(patient,tgexp,by="row.names")
+
+# push sample ids back to the row names
+rownames(tgexp)=tgexp[,1]
+tgexp=tgexp[,-1]
+```
+
+
+```{r}
+# Partitioning data to train and test
+
+ 
+
+# get indices for 70% of the data set
+intrain <- createDataPartition(y = tgexp[,1], p= 0.7)[[1]]
+
+# seperate test and training sets
+training <- tgexp[intrain,]# 70%
+testing <- tgexp[-intrain,] # 30%
+```
+
+
+
+### Question 1a - classifer 1
+
+
+```{r classifier1}
+set.seed(3031)
+fitControl_naive <- trainControl(
+  classProbs=T, # we want probabilites returned for each prediction
+  method = "cv",
+  number = 5,
+  summaryFunction = twoClassSummary
+)
+
+
+bglmFit <- train(subtype ~ ., data=training, 
+                 method = 'bayesglm',
+                 trControl = fitControl_naive)
+bglmFit_predict = predict(bglmFit, testing, type = "raw") 
+
+```
+
+
+### Question 1b - classifer 2
+
+```{r classifier2}
+# Random Forest
+set.seed(17)
+rfFit <- train(subtype ~ ., data=training, 
+               method = 'rf',
+                 trControl = fitControl_naive)
+
+rf_predict = predict(rfFit, testing)
+```
+
+### Question 1c - classifer 3
+
+```{r classifier3}
+# testing
+library(xgboost)
+set.seed(17)
+
+gbFit <- train(subtype~., data = training, 
+                 method = "xgbTree",
+                 trControl=fitControl_naive,
+                 
+                 tuneGrid = data.frame(nrounds=200,
+                                       eta=c(0.05,0.1,0.3),
+                                       max_depth=4,
+                                       gamma=0,
+                                       colsample_bytree=1,
+                                       subsample=0.5,
+                                       min_child_weight=1))
+                                       
+
+gb_predict = predict(gbFit, testing)
+
+```
+
+## Question 2 - comparing the performance of three classifiers
+
+So now you have calculated the performance of these three classifiers on this task - make a plot to compare their performance and calculate any statistics may may want to use. 
+
+```{r}
+library(PRROC)
+library(tidyverse)
+roc_maker <- function(model, data) {
+  # new predictions on test set
+  # don't use the training set - if you are overfitting you will not get accurate idea of your models merit
+  new_predictions <- predict(model, data, type = 'prob') %>%
+    mutate(Answers = data$subtype, 
+           Prediction = case_when(CIMP > 0.5 ~ 'CIMP', 
+                                  TRUE ~ 'noCIMP'))
+  roc.curve(scores.class0 = new_predictions %>% filter(Answers=='CIMP') %>% pull(CIMP),
+           scores.class1 = new_predictions %>% filter(Answers=='noCIMP') %>% pull(CIMP),
+           curve = T)
+}
+```
+
+
+```{r}
+####### 1st classifier
+confusionMatrix(data = testing[,1],reference = bglmFit_predict)$byClass
+# Precision: 0.9629630 # positive predictive value
+# Sensitivity : 1.0000000 # true positive rate
+# Specificity : 0.9642857 # true negative rate
+
+plot(roc_maker(bglmFit, testing))
+
+# AUC = 1
+```
+
+```{r}
+######## 2nd clasifier
+confusionMatrix(testing[,1],rf_predict)$byClass
+
+# Precision: 0.9259259
+# Sensitivity : 0.9615385          
+# Specificity : 0.9285714
+
+plot(roc_maker(rfFit, testing))
+
+# AUC = 0.996
+```
+
+
+```{r}
+####### 3rd clasifier
+confusionMatrix(testing[,1],gb_predict )$byClass
+
+# Precision : 0.9629630            
+# Sensitivity : 0.9629630        
+# Specificity : 0.9629630
+
+plot(roc_maker(gbFit, testing))
+# AUC - 0.997
+```
+
+Which of the three classifiers you've used is the best one (why)? 
+
+```{r}
+
+# I would choose the bayesian generalized linear model. I looked at 4 criteria: Precision, sensitivity, specificity, and area under the curve (AUC) which indicated the False positive ratio with increasing sensitivity. All of these parameters indicate that the best clasifier is the bayseian GLM.
+
+# Precision: 0.9629630 value showed that the model is makes little mistakes and has very low false positive rate. (or, conversely, high true positive rate)
+# Sensitivity : 1.0000000 value showed that in 100% cases the model does not miss CIMP cases and does not call them non CIMP. This is of particular importance in diagnostics as a failure to identify gliabastoma means no treatment and could result in death.
+# Specificity : 0.9642857 value showed that the model is good at predicting true negatives. This is important as if this was low, you could send someone to do chemotherapy even though they do not have gliablastoma.
+
+# The bayesian GLM also had the highest AUC value of 1 which means that the model has 100% sensitivity (no false negatives) and 100% specificity (no false positives). 
+
+# I think it is important to note that such high auc values seem too good to be true. I probably messed up somewhere and overfitted my data. My values are also inconsistent from 1 iteration to another (for example when i knit this markdown file) which I think is the result of not properly setting the seed to make it pseudo-random and replicable.
+
+```
+
+
+```{r}
+sessionInfo()
+```
